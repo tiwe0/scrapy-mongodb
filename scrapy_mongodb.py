@@ -7,6 +7,7 @@ from pymongo.mongo_client import MongoClient
 from pymongo.read_preferences import ReadPreference
 
 from scrapy.exporters import BaseItemExporter
+from scrapy.exceptions import CloseSpider
 
 
 def not_set(string):
@@ -174,11 +175,11 @@ class MongoDBPipeline(BaseItemExporter):
 
         item = dict((k, v) for k, v in six.iteritems(item) if v is not None and v != "")
 
+        if self.config['append_timestamp']:
+            item['scrapy-mongodb'] = {'ts': datetime.datetime.utcnow()}
+
         if self.config['buffer']:
             self.current_item += 1
-
-            if self.config['append_timestamp']:
-                item['scrapy-mongodb'] = {'ts': datetime.datetime.utcnow()}
 
             self.item_buffer.append(item)
 
@@ -186,13 +187,15 @@ class MongoDBPipeline(BaseItemExporter):
                 self.current_item = 0
 
                 try:
-                    return self.insert_item(self.item_buffer, spider)
+                    self.insert_item(self.item_buffer, spider)
+                    return item
                 finally:
                     self.item_buffer = []
 
             return item
 
-        return self.insert_item(item, spider)
+        self.insert_item(item, spider)
+        return item
 
     def close_spider(self, spider):
         """Be called when the spider is closed.
@@ -211,13 +214,23 @@ class MongoDBPipeline(BaseItemExporter):
         :param item: The item(s) to put into MongoDB
         :type spider: BaseSpider object
         :param spider: The spider running the queries
-        :returns: Item object
+        :returns: None
         """
-        if not isinstance(item, list):
-            item = dict(item)
 
-            if self.config['append_timestamp']:
-                item['scrapy-mongodb'] = {'ts': datetime.datetime.utcnow()}
+        if isinstance(item, list):
+            self._insert_many(item, spider)
+        else:
+            self._insert_one(item, spider)
+
+    def _insert_one(self, item, spider):
+        """Process the item and add it to MongoDB.
+
+        :type item: (Item object)
+        :param item: The items to put into MongoDB
+        :type spider: BaseSpider object
+        :param spider: The spider running the queries
+        :returns: None
+        """
 
         collection_name, collection = self.get_collection(spider.name)
 
@@ -238,20 +251,52 @@ class MongoDBPipeline(BaseItemExporter):
                         )
 
         else:
-            key = {}
+            filter = {}
+            unique_key = self.config['unique_key']
 
-            if isinstance(self.config['unique_key'], list):
-                for k in dict(self.config['unique_key']).keys():
-                    key[k] = item[k]
-            else:
-                key[self.config['unique_key']] = item[self.config['unique_key']]
+            if not isinstance(unique_key, list):
+                unique_key = [unique_key]
 
-            collection.update_one(key, item, upsert=True)
+            for k in dict(self.config['unique_key']).keys():
+                filter[k] = item[k]
+
+            collection.update_one(filter, {'$set': item}, upsert=True)
 
             self.logger.debug(u'Stored item(s) in MongoDB {0}/{1}'.format(
                 self.config['database'], collection_name))
 
-        return item
+    def _insert_many(self, items, spider):
+        """Process the item and add it to MongoDB.
+
+        :type item: [(Item object)]
+        :param item: The items to put into MongoDB
+        :type spider: BaseSpider object
+        :param spider: The spider running the queries
+        :returns: None
+        """
+
+        collection_name, collection = self.get_collection(spider.name)
+
+        if self.config['unique_key'] is None:
+            try:
+                collection.insert_many(items)
+                self.logger.debug(u'Stored item(s) in MongoDB {0}/{1}'.format(
+                    self.config['database'], collection_name))
+
+            except errors.DuplicateKeyError:
+                self.logger.debug(u'Duplicate key found')
+                if (self.stop_on_duplicate > 0):
+                    self.duplicate_key_count += 1
+                    if (self.duplicate_key_count >= self.stop_on_duplicate):
+                        self.crawler.engine.close_spider(
+                            spider,
+                            'Number of duplicate key insertion exceeded'
+                        )
+
+        else:
+            self.logger.warning(f"buffer is conflict with unique_key, trying inserting data one by one.")
+            for item in items:
+                self._insert_one(item, spider)
 
     def get_collection(self, name):
         if self.config['separate_collections']:
