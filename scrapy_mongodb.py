@@ -257,7 +257,7 @@ class MongoDBPipeline(BaseItemExporter):
             if not isinstance(unique_key, list):
                 unique_key = [unique_key]
 
-            for k in dict(self.config['unique_key']).keys():
+            for k in set(unique_key):
                 filter[k] = item[k]
 
             collection.update_one(filter, {'$set': item}, upsert=True)
