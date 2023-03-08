@@ -1,4 +1,4 @@
-import datetime
+import time
 import logging
 
 import six
@@ -7,7 +7,6 @@ from pymongo.mongo_client import MongoClient
 from pymongo.read_preferences import ReadPreference
 
 from scrapy.exporters import BaseItemExporter
-from scrapy.exceptions import CloseSpider
 
 
 def not_set(string):
@@ -176,7 +175,7 @@ class MongoDBPipeline(BaseItemExporter):
         item = dict((k, v) for k, v in six.iteritems(item) if v is not None and v != "")
 
         if self.config['append_timestamp']:
-            item['scrapy-mongodb'] = {'ts': datetime.datetime.utcnow()}
+            item['scrapy-mongodb'] = {'ts': int(time.time()*1000)}
 
         if self.config['buffer']:
             self.current_item += 1
